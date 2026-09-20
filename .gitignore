@@ -1,0 +1,4 @@
+node_modules/
+.cannjudge/
+*.log
+.DS_Store
