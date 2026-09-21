@@ -1,14 +1,5 @@
-import {
-  mkdir,
-  readFile,
-  writeFile,
-  rename,
-  chmod,
-  rm,
-} from "node:fs/promises";
 import { join } from "node:path";
 import { homedir } from "node:os";
-import { randomUUID } from "node:crypto";
 
 export const ORIGIN = "https://cannjudge.cn";
 export const configDir = () =>
@@ -98,52 +89,6 @@ export function minimalUser(value: unknown): User {
     );
   return { _id: u._id!, ID: u.ID!, nickname: String(u.nickname || "") };
 }
-export async function saveSession(
-  user: User,
-  cookie: string,
-  dir = configDir(),
-) {
-  await mkdir(dir, { recursive: true, mode: 0o700 });
-  await chmod(dir, 0o700);
-  const temp = join(dir, `.session-${randomUUID()}`);
-  await writeFile(
-    temp,
-    JSON.stringify(
-      {
-        origin: ORIGIN,
-        user: minimalUser(user),
-        cookie: validateCookie(cookie),
-        savedAt: new Date().toISOString(),
-      },
-      null,
-      2,
-    ) + "\n",
-    { mode: 0o600, flag: "wx" },
-  );
-  await rename(temp, join(dir, "session.json"));
-}
-export async function loadSession(
-  dir = configDir(),
-): Promise<Session | undefined> {
-  try {
-    const s = JSON.parse(
-      await readFile(join(dir, "session.json"), "utf8"),
-    ) as Session;
-    if (s.origin !== ORIGIN) throw new Error("会话站点不匹配。");
-    return {
-      ...s,
-      user: minimalUser(s.user),
-      cookie: validateCookie(s.cookie),
-    };
-  } catch (e) {
-    if ((e as NodeJS.ErrnoException).code === "ENOENT") return undefined;
-    throw e;
-  }
-}
-export async function logout() {
-  await rm(join(configDir(), "session.json"), { force: true });
-}
-
 export class Client {
   user?: User;
   origin: string;
@@ -157,6 +102,13 @@ export class Client {
   requireUser(): User {
     if (!this.user) throw new Error("请先运行 auth login 或 auth import。");
     return this.user;
+  }
+  async currentUser(): Promise<User> {
+    const saved = this.requireUser();
+    const actual = minimalUser(await this.request(`/api/users/me/${saved.ID}`));
+    if (actual._id !== saved._id || actual.ID !== saved.ID)
+      throw new Error("会话 Cookie 与所选账号不一致，请重新登录该账号。");
+    return actual;
   }
   async request<T>(
     path: string,

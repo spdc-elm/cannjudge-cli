@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 import { parseArgs } from "node:util";
-import { Client, loadSession, ORIGIN } from "./api.ts";
+import { Client, ORIGIN } from "./api.ts";
+import { loadSession, useAccount } from "./accounts.ts";
+import { getUsage, submitProject } from "./usage.ts";
 import type { Submission, User } from "./api.ts";
 import { auth } from "./auth.ts";
 import { resolve, problemUrl, submissionId } from "./resolve.ts";
@@ -21,15 +23,17 @@ const HELP = `cannjudge — Node.js/TypeScript CLI (Node >=22.18)
     导出自己的历史提交源码。
   submissions URL [--mine] [--page 1] [--limit 20]
   ranking URL [--problem SELECTOR] [--page 1] [--limit 20]
+  usage [--profile NAME] [--json]
+    当前账号北京时间当天的官方提交次数和本机请求记录。
   auth captcha [--out DIR]
   auth login --account EMAIL --challenge FILE --code CODE [--password-stdin]
   auth import --file FILE|-    导入自己的浏览器会话 {user, cookie} JSON
-  auth import --listen        临时本地表单导入（Cookie 不进入命令行）
-  auth status | auth logout
+  auth import --listen [--name NAME]  保存独立账号（登录也支持 --name）
+  auth list | auth use NAME | auth status | auth logout
 
-所有命令支持 --json。进度写 stderr，结果写 stdout。
+所有命令支持 --json、--profile NAME（仅本次选择账号）。进度写 stderr，结果写 stdout。
 退出码：0 成功，1 操作错误，2 评测未通过，3 跟踪超时（不会重新提交）。
-会话保存在 ~/.config/cannjudge-cli/session.json，权限 0600，不保存密码。
+会话按账号保存在 ~/.config/cannjudge-cli/accounts/，权限 0600，不保存密码。
 比赛中的题目编号以 inspect 返回的 ID/slug 为准，不使用页面行号。
 `;
 function positive(
@@ -70,6 +74,8 @@ async function main() {
       challenge: { type: "string" },
       code: { type: "string" },
       "password-stdin": { type: "boolean" },
+      profile: { type: "string" },
+      name: { type: "string" },
     },
   });
   const [command, input] = p;
@@ -77,8 +83,18 @@ async function main() {
     console.log(HELP);
     return;
   }
+  if (command === "auth" && input === "use") {
+    if (p.length !== 3 || o.profile)
+      throw new Error("用法：auth use NAME（与 --profile 分开使用）。");
+    const selected = await loadSession(undefined, p[2]);
+    await new Client(selected?.user, selected?.cookie).currentUser();
+    print(await useAccount(p[2]), !!o.json);
+    return;
+  }
   if (p.length > 2) throw new Error("多余位置参数；路径含空格时请加引号。");
-  const session = await loadSession();
+  if (o.name && !(command === "auth" && ["login", "import"].includes(input)))
+    throw new Error("--name 仅用于 auth login/import 保存账号别名。");
+  const session = await loadSession(undefined, o.profile);
   const client = new Client(session?.user, session?.cookie),
     json = !!o.json;
   if (command === "auth") {
@@ -91,9 +107,17 @@ async function main() {
         code: o.code,
         passwordStdin: o["password-stdin"],
         listen: o.listen,
+        name: o.name,
+        profile: o.profile,
       }),
       json,
     );
+    return;
+  }
+  if (command === "usage") {
+    if (input || o.problem)
+      throw new Error("usage 是账号级次数查询，不需要题目或比赛链接。");
+    print(await getUsage(client), json);
     return;
   }
   if (!input) throw new Error("缺少题目、比赛或提交记录链接；运行 --help。");
@@ -335,17 +359,7 @@ async function main() {
     print({ dryRun: true, ...plan }, json);
     return;
   }
-  // Match the frontend: submit editable files in one request. No automatic POST retry.
-  const response = await client.request<{ data?: { submissionId?: string } }>(
-    "/api/submissions/submit",
-    {},
-    { problemId: problem._id, userId: user!._id, files: project.files },
-  );
-  const id = response.data?.submissionId;
-  if (!id)
-    throw new Error(
-      "服务端响应缺少 submissionId；可能已提交，请先查询 submissions。",
-    );
+  const id = await submitProject(client, problem._id, project.files);
   if (o.watch) {
     process.stderr.write(`已提交 ${ORIGIN}/submission/${id}\n`);
     await showStatus(client, id, true, o, json);

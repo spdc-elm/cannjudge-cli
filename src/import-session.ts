@@ -1,20 +1,22 @@
 import { createServer } from "node:http";
 import { randomBytes } from "node:crypto";
 import type { Client } from "./api.ts";
-import { minimalUser, validateCookie, saveSession } from "./api.ts";
+import { minimalUser, validateCookie } from "./api.ts";
+import { saveSession } from "./accounts.ts";
 export async function importSession(
   client: Client,
   data: { user: unknown; cookie: unknown },
+  name?: string,
 ) {
   const user = minimalUser(data.user);
   client.cookie = validateCookie(data.cookie);
   const current = minimalUser(await client.request(`/api/users/me/${user.ID}`));
   if (current._id !== user._id || current.ID !== user.ID)
     throw new Error("登录对象与会话账户不一致。");
-  await saveSession(current, client.cookie);
+  await saveSession(current, client.cookie, undefined, name);
   return { loggedIn: true, user: current };
 }
-export async function listenImport(client: Client) {
+export async function listenImport(client: Client, name?: string) {
   const path = "/" + randomBytes(24).toString("hex");
   return await new Promise<Awaited<ReturnType<typeof importSession>>>(
     (resolve, reject) => {
@@ -60,7 +62,7 @@ export async function listenImport(client: Client) {
           const data = JSON.parse(
             new URLSearchParams(raw).get("session") || "",
           );
-          const result = await importSession(client, data);
+          const result = await importSession(client, data, name);
           res.end("<p>会话已验证并保存，可以关闭此页面。</p>");
           clearTimeout(timer);
           server.close();

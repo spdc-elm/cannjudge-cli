@@ -47,7 +47,37 @@ cannjudge auth import --listen
 
 导入格式为 `{"user":{"_id":"内部账户ID","ID":123,"nickname":"昵称"},"cookie":"Cookie名=值"}`。`user` 取自本站 Local Storage 的 `cannjudge_user`，Cookie 取自本站已登录 **`/api/…` 请求**的 Cookie 请求头。实测会话名为 `cannjudge_auth`、路径为 `/api`、带 HttpOnly；检查网站根路径或 `document.cookie` 都可能看不到它。导入会先访问受认证保护的 `/api/users/me/<ID>`，确认 Cookie 和账户匹配后才保存；只有用户名／账户 ID 无法登录。
 
-保存位置是 `~/.config/cannjudge-cli/session.json`（支持 `XDG_CONFIG_HOME` 或 `CANNJUDGE_CONFIG_DIR`），目录权限 `0700`、文件 `0600`。仅保存最小账户资料和会话 Cookie，不保存密码，不将凭据放入项目仓库。401/403 直接报错，不偷偷切换账户。
+会话按真实账号 ID 保存在 `~/.config/cannjudge-cli/accounts/`（支持 `XDG_CONFIG_HOME` 或 `CANNJUDGE_CONFIG_DIR`），目录权限 `0700`、文件 `0600`。仅保存最小账户资料和会话 Cookie，不保存密码。旧 `session.json` 会自动迁移，原登录仍可用。
+
+多账号登录／导入时可指定 `--name` 保存别名，未指定时以账号数字 ID 命名。新登录会成为默认账号，已有账号的会话保留。
+
+```bash
+cannjudge auth import --listen --name personal
+cannjudge auth import --listen --name work
+cannjudge auth list
+cannjudge auth use personal
+cannjudge usage --profile work --json  # 仅此命令使用 work，不改变默认账号
+cannjudge auth status --profile work
+cannjudge auth logout --profile work  # 仅移除 work 的本地会话
+```
+
+`--profile` 支持别名、账号数字 ID 或内部 ID。`auth list` 不显示 Cookie，也不宣称缓存会话仍有效；`auth status`、`auth use`、次数查询和提交会验证 Cookie 对应的真实身份。未找到账号或会话过期时直接报错，不自动换号。退出当前账号后也不会自动选中另一个账号。同一账号重新命名后，计数仍按账号 ID 保留。
+
+## 当天提交次数
+
+```bash
+cannjudge usage --json
+cannjudge usage --profile personal --json
+```
+
+平台限制为**每账号每天 50 次提交，北京时间 00:00 重置**。2026-09-21 已通过真实 HTTP 429 `daily_limit` 响应核实。CLI 只统计次数，不在提交前检查额度或拦截请求，限制由服务端执行。
+
+`usage` 返回当前账号身份、北京时间日期和两组计数，不发送提交请求：
+
+- `submittedToday`：分页读取官方账号提交历史，统计跨全部题目的当天次数，包含编译错误等已有提交，覆盖网页和其他机器的提交。
+- `localToday`：本机 CLI 的 `attempted/accepted/rejected/unknown`。网络中断、服务端 5xx 或缺少提交 ID 归为 `unknown`；被 429 拒绝的请求归为 `rejected`，不算作已创建提交。
+
+本机日志位于配置目录的 `submissions/<账号ID>.jsonl`，权限 `0600`，仅含时间、账号／题目／提交 ID 和结果，不记录 Cookie 或源码。从更新后开始记录，`--dry-run` 不计入。公开前端中未找到独立的配额预查接口，因此直接使用官方提交历史，不拿本机次数推断总用量。
 
 ## 工程与提交
 
@@ -89,7 +119,7 @@ cannjudge ranking https://cannjudge.cn/public/ct_starcup_aiop_g3 --limit 10
 
 ## 验证与接口边界
 
-必要测试集中在 `test/core.test.ts`：链接消歧、模板文件筛选、单文件合并、路径与凭据边界、HTTP Cookie 传递和轮询状态。无大规模快照或前端测试。
+必要测试位于 `test/`：链接消歧、工程匹配、凭据与路径边界、轮询、多账号迁移／隔离，以及北京时间跨日计数和提交结果记录。无大规模快照或前端测试。
 
 接口依据 CANNJudge 自身公开前端代码及实际响应（2026-09-20）。这不是站方承诺稳定的 SDK；接口变动时应重新核对，不能把 API 失败当成空榜或评测通过。
 

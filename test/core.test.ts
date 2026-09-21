@@ -12,7 +12,8 @@ import {
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { createServer } from "node:http";
-import { Client, saveSession, loadSession, minimalUser } from "../src/api.ts";
+import { Client, minimalUser } from "../src/api.ts";
+import { saveSession, loadSession } from "../src/accounts.ts";
 import type { Problem, ProjectFile, Submission } from "../src/api.ts";
 import { parseTarget, selectProblem, submissionId } from "../src/resolve.ts";
 import { buildProject, writeProject, safePath } from "../src/project.ts";
@@ -149,13 +150,14 @@ test("credentials persist privately without passwords and validate the origin", 
     root,
   );
   assert.deepEqual((await loadSession(root))?.user, user);
-  const raw = await readFile(join(root, "session.json"), "utf8");
+  const path = join(root, "accounts", `${user._id}.json`);
+  const raw = await readFile(path, "utf8");
   assert(!raw.includes("never-save"));
   assert.equal((await stat(root)).mode & 0o777, 0o700);
-  assert.equal((await stat(join(root, "session.json"))).mode & 0o777, 0o600);
+  assert.equal((await stat(path)).mode & 0o777, 0o600);
   await assert.rejects(saveSession(user, "bad\r\nheader", root));
   await writeFile(
-    join(root, "session.json"),
+    path,
     raw.replace("https://cannjudge.cn", "https://evil.example"),
   );
   await assert.rejects(loadSession(root), /站点/);
