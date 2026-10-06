@@ -2,3 +2,5 @@ node_modules/
 .cannjudge/
 *.log
 .DS_Store
+/AGENTS.md
+/ENVIRONMENT.md

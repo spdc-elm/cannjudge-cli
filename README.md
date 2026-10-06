@@ -1,5 +1,7 @@
 # CANNJudge CLI
 
+独立工具仓库：[spdc-elm/cannjudge-cli](https://github.com/spdc-elm/cannjudge-cli)。可在任意工作目录调用，题目源码由命令参数指定。
+
 用题目／比赛链接读题、下载模板、提交本地源码、跟踪评测和查榜。TypeScript，Node.js ≥ 22.18，零运行时依赖。不依赖浏览器自动化；登录过期时需重新登录。
 
 ```bash
@@ -8,7 +10,7 @@ node src/cli.ts --help
 npm link
 ```
 
-下面用 `cannjudge`；未执行 `npm link` 时替换为 `node /绝对路径/cannjudge_cli/src/cli.ts`。开发检查使用 `npm ci && npm run check && npm test`，正常运行不需要安装依赖。
+下面用 `cannjudge`；未执行 `npm link` 时替换为 `node /绝对路径/cannjudge-cli/src/cli.ts`。开发检查使用 `npm ci && npm run check && npm test`，正常运行不需要安装依赖。
 
 ## 从链接定位
 
