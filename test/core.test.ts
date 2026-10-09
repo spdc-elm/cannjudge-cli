@@ -17,7 +17,8 @@ import { saveSession, loadSession } from "../src/accounts.ts";
 import type { Problem, ProjectFile, Submission } from "../src/api.ts";
 import { parseTarget, selectProblem, submissionId } from "../src/resolve.ts";
 import { buildProject, writeProject, safePath } from "../src/project.ts";
-import { watch, summarize } from "../src/results.ts";
+import { watch, summarize, detail } from "../src/results.ts";
+import { spawnSync } from "node:child_process";
 const user = { _id: "1234567890abcdef12345678", ID: 7, nickname: "test" };
 const files: ProjectFile[] = [
   { path: "CMakeLists.txt", content: "server cmake", editable: false },
@@ -247,4 +248,79 @@ test("watch follows running to Pass, preserves case errors, and times out withou
     summarize(fail.submission).cases[0].message,
     "precision mismatch",
   );
+});
+
+test("details preserve validity and unknown metadata while source bodies are opt-in", () => {
+  const s: Submission = {
+    _id: "s", user_id: user._id, problem_id: "p", status: "Pass", valid: false,
+    msg: "original message", future_review_field: { reason: "original reason" },
+    files: [{ path: "kernel.asc", content: "β", editable: true }],
+    kernel_cpp: "legacy body", tiling_h: "",
+  };
+  assert.equal(summarize(s).status, "Pass");
+  assert.equal(summarize(s).valid, false);
+  assert.equal(summarize({ ...s, valid: undefined }).valid, null);
+  assert.equal(summarize({ ...s, valid: true }).valid, true);
+  const view = detail(s) as Record<string, unknown>;
+  assert.equal(view.valid, false);
+  assert.deepEqual(view.future_review_field, s.future_review_field);
+  const manifest = view.files as { bytes: number; sha256: string; content?: string }[];
+  assert.equal(manifest[0].bytes, 2);
+  assert.equal(manifest[0].sha256.length, 64);
+  assert.equal(manifest[0].content, undefined);
+  assert.equal(view.kernel_cpp, undefined);
+  assert(!JSON.stringify(view).includes("legacy body"));
+  assert.deepEqual(detail(s, true), s);
+  assert.equal(s.files![0].content, "β");
+});
+
+test("account history preserves invalid records across pages and resolves own numeric IDs", async () => {
+  const first: Submission = { _id: "first", ID: 42, user_id: user._id, problem_id: "p", status: "Pass", valid: false };
+  const second: Submission = { ...first, _id: "second", ID: 41, valid: true };
+  const c = new Client(user);
+  const paths: string[] = [];
+  c.request = async <T>(path: string, query: Record<string, string | number | undefined> = {}) => {
+    paths.push(path);
+    if (path === `/api/submissions/user/${user._id}`)
+      return { total: 2, list: query.skip === 0 ? [first] : [second] } as T;
+    assert.equal(path, "/api/submissions/first");
+    return first as T;
+  };
+  assert.deepEqual(await c.userSubmissions(), [first, second]);
+  assert.equal((await c.submission("42")).valid, false);
+  assert(!paths.includes("/api/submissions/global/list"));
+  c.request = async <T>() => ({ total: 2, list: [first] }) as T;
+  await assert.rejects(c.userSubmissions(), /重复/);
+  c.request = async <T>() => ({ total: 2, list: [] }) as T;
+  await assert.rejects(c.userSubmissions(), /分页不完整/);
+  c.request = async <T>() => ({ total: 1, list: [{ ...first, user_id: "other" }] }) as T;
+  await assert.rejects(c.userSubmissions(), /账号不匹配/);
+});
+
+test("CLI status fails for invalid Pass while detail succeeds and returns full metadata", async (t) => {
+  const root = await temp(t);
+  await saveSession(user, "session=test-only", root);
+  const id = "1234567890abcdef12345679";
+  const submission = { _id: id, ID: 42, user_id: user._id, problem_id: "p", status: "Pass", valid: false, files: [{ path: "kernel.asc", content: "source-body" }], review_note: "server-original" };
+  const preload = join(root, "fetch.mjs");
+  await writeFile(preload, `globalThis.fetch = async (url, options) => {
+    if (options.method !== 'GET') throw new Error('Unexpected mutation');
+    const path = new URL(url).pathname;
+    if (path !== '/api/submissions/${id}') throw new Error('Unexpected route: ' + path);
+    return new Response(JSON.stringify(${JSON.stringify(submission)}), {headers:{'Content-Type':'application/json'}});
+  };`);
+  const cli = new URL("../src/cli.ts", import.meta.url);
+  const run = (...args: string[]) => spawnSync(process.execPath, ["--import", preload, cli.pathname, ...args, "--json"], {
+    encoding: "utf8", env: { ...process.env, CANNJUDGE_CONFIG_DIR: root },
+  });
+  const status = run("status", id);
+  assert.equal(status.status, 2, status.stderr);
+  assert.equal(JSON.parse(status.stdout).valid, false);
+  const result = run("detail", id);
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(JSON.parse(result.stdout).review_note, "server-original");
+  assert(!result.stdout.includes("source-body"));
+  const code = run("detail", id, "--include-code");
+  assert.equal(code.status, 0, code.stderr);
+  assert.equal(JSON.parse(code.stdout).files[0].content, "source-body");
 });

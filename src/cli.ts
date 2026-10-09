@@ -7,7 +7,7 @@ import type { Submission, User } from "./api.ts";
 import { auth } from "./auth.ts";
 import { resolve, problemUrl, submissionId } from "./resolve.ts";
 import { buildProject, writeProject } from "./project.ts";
-import { summarize, watch, pending } from "./results.ts";
+import { summarize, detail, watch, pending } from "./results.ts";
 const HELP = `cannjudge — Node.js/TypeScript CLI (Node >=22.18)
 
   inspect URL [--problem SLUG|TITLE|ID] [--json]
@@ -19,6 +19,9 @@ const HELP = `cannjudge — Node.js/TypeScript CLI (Node >=22.18)
     按平台模板路径匹配；忽略只读文件，不上传 README/测试/构建目录。
     --base 必须是当前账户同一道题的提交，合成完整工程后一次提交。
   status SUBMISSION_URL|ID [--watch] [--interval 5] [--timeout 600]
+    评测摘要和 valid 有效性；Pass 不代表提交仍然有效。
+  detail SUBMISSION_URL|ID [--include-code]
+    原始详情字段；默认源码只显示路径、字节数和 SHA-256。
   download SUBMISSION_URL|ID --out DIR
     导出自己的历史提交源码。
   submissions URL [--mine] [--page 1] [--limit 20]
@@ -32,7 +35,7 @@ const HELP = `cannjudge — Node.js/TypeScript CLI (Node >=22.18)
   auth list | auth use NAME | auth status | auth logout
 
 所有命令支持 --json、--profile NAME（仅本次选择账号）。进度写 stderr，结果写 stdout。
-退出码：0 成功，1 操作错误，2 评测未通过，3 跟踪超时（不会重新提交）。
+退出码：0 查询成功或评测通过，1 操作错误，2 status 评测未通过或提交无效，3 跟踪超时。
 会话按账号保存在 ~/.config/cannjudge-cli/accounts/，权限 0600，不保存密码。
 比赛中的题目编号以 inspect 返回的 ID/slug 为准，不使用页面行号。
 `;
@@ -65,6 +68,7 @@ async function main() {
       base: { type: "string" },
       "dry-run": { type: "boolean" },
       watch: { type: "boolean" },
+      "include-code": { type: "boolean" },
       interval: { type: "string" },
       timeout: { type: "string" },
       page: { type: "string" },
@@ -83,6 +87,10 @@ async function main() {
     console.log(HELP);
     return;
   }
+  if (o["include-code"] && command !== "detail")
+    throw new Error("--include-code 仅用于 detail 查看完整源码。");
+  if (o.watch && command === "detail")
+    throw new Error("detail 是单次详情查询；跟踪评测请使用 status --watch。");
   if (command === "auth" && input === "use") {
     if (p.length !== 3 || o.profile)
       throw new Error("用法：auth use NAME（与 --profile 分开使用）。");
@@ -121,8 +129,12 @@ async function main() {
     return;
   }
   if (!input) throw new Error("缺少题目、比赛或提交记录链接；运行 --help。");
-  if (["status", "download"].includes(command)) {
+  if (["status", "detail", "download"].includes(command)) {
     const id = submissionId(input);
+    if (command === "detail") {
+      print(detail(await client.submission(id), !!o["include-code"]), json);
+      return;
+    }
     if (command === "download") {
       const user = client.requireUser(),
         s = await client.submission(id);
@@ -144,7 +156,7 @@ async function main() {
     throw new Error(`未知命令：${command}`);
   const r = await resolve(client, input, o.problem);
   if (r.target.kind === "submission")
-    throw new Error("该链接是提交记录；请使用 status/download 或传题目链接。");
+    throw new Error("该链接是提交记录；请使用 status/detail/download 或传题目链接。");
   const contest = r.contest!,
     problem = r.problem;
   const url = problem
@@ -193,11 +205,9 @@ async function main() {
   if (command === "submissions") {
     let items: Submission[], total: number;
     if (o.mine) {
-      const user = client.requireUser();
       if (!problem) throw new Error("--mine 需要题目链接或 --problem。");
-      items = await client.request<Submission[]>(
-        `/api/submissions/user/${user._id}/problem/${problem._id}`,
-      );
+      // The problem-specific endpoint omits valid. Account history preserves it.
+      items = (await client.userSubmissions()).filter((s) => s.problem_id === problem._id);
       items.sort((a, b) =>
         String(b.create_time).localeCompare(String(a.create_time)),
       );
@@ -228,6 +238,7 @@ async function main() {
           id: s._id,
           number: s.ID,
           status: s.status,
+          valid: s.valid ?? null,
           createdAt: s.create_time,
           url: `${ORIGIN}/submission/${s._id}`,
         })),
@@ -261,16 +272,20 @@ async function main() {
       team?: { team_name?: string; name?: string };
       submission_id?: string;
       status?: string;
+      create_time?: string;
+      submission?: { ID?: number };
       result?: { time?: number }[];
     };
     let rows: Rank[], total: number;
+    let testcases: unknown[] | undefined;
     if (problem) {
-      const data = await client.request<{ rows: Rank[]; total: number }>(
+      const data = await client.request<{ rows: Rank[]; total: number; testcases?: unknown[] }>(
         `/api/problems/${problem._id}/ranking`,
         { ...client.query(), page, size: limit },
       );
       rows = data.rows;
       total = data.total;
+      testcases = data.testcases;
     } else {
       rows = await client.request<Rank[]>(
         `/api/submissions/contest/${contest._id}/stats`,
@@ -293,6 +308,8 @@ async function main() {
         total,
         page,
         limit,
+        rankingSubmissionMode: problem?.ranking_submission_mode,
+        testcases,
         rows: rows.map((x, i) => ({
           rank: x.rank ?? (page - 1) * limit + i + 1,
           name:
@@ -303,6 +320,9 @@ async function main() {
           score: x.score,
           passed: x.passCount,
           status: x.status,
+          submitter: x.submitter || x.user,
+          submissionNumber: x.submission?.ID,
+          createdAt: x.create_time,
           timesUs: x.result?.map((v) => v.time),
           submission: x.submission_id
             ? `${ORIGIN}/submission/${x.submission_id}`
@@ -387,7 +407,7 @@ async function showStatus(
         timeoutMs: positive(o.timeout, 600, 86400) * 1000,
         progress: (s) =>
           process.stderr.write(
-            `${s.status} ${s.result?.filter((r) => r.testcase_status === "Pass").length || 0}/${s.result?.length || 0}\n`,
+            `${s.status} valid=${s.valid ?? "unknown"} ${s.result?.filter((r) => r.testcase_status === "Pass").length || 0}/${s.result?.length || 0}\n`,
           ),
       })
     : { submission: await client.submission(id), timedOut: false };
@@ -402,8 +422,8 @@ async function showStatus(
   );
   if (result.timedOut) process.exitCode = 3;
   else if (
-    result.submission.status !== "Pass" &&
-    !pending(result.submission.status)
+    result.submission.valid === false ||
+    (result.submission.status !== "Pass" && !pending(result.submission.status))
   )
     process.exitCode = 2;
 }

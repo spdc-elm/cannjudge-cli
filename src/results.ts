@@ -1,4 +1,5 @@
 import { setTimeout as sleep } from "node:timers/promises";
+import { createHash } from "node:crypto";
 import type { Client, Submission } from "./api.ts";
 import { ORIGIN } from "./api.ts";
 export function summarize(s: Submission) {
@@ -8,6 +9,7 @@ export function summarize(s: Submission) {
     number: s.ID,
     url: `${ORIGIN}/submission/${s._id}`,
     status: s.status,
+    valid: s.valid ?? null,
     problem: s.problem?.title || s.problem_id,
     createdAt: s.create_time,
     passed: cases.filter((r) => r.testcase_status === "Pass").length,
@@ -16,6 +18,7 @@ export function summarize(s: Submission) {
     message: s.msg || undefined,
     cases: cases.map((r, i) => ({
       index: i + 1,
+      testcaseId: r.testcase_id,
       status: r.testcase_status,
       timeUs: r.time,
       bestTimeUs: r.best_time,
@@ -23,6 +26,22 @@ export function summarize(s: Submission) {
       message: r.msg || undefined,
     })),
   };
+}
+export function detail(s: Submission, includeCode = false) {
+  if (includeCode) return s;
+  const manifest = (content: string) => ({
+    bytes: Buffer.byteLength(content),
+    sha256: createHash("sha256").update(content).digest("hex"),
+  });
+  const result: Record<string, unknown> = { ...s };
+  if (s.files) result.files = s.files.map(({ content, ...file }) => ({ ...file, ...manifest(content) }));
+  const legacyCode: Record<string, unknown> = {};
+  for (const key of ["tiling_h", "tiling_key_h", "tiling_key_cpp", "host_cpp", "kernel_cpp"]) {
+    if (typeof s[key] === "string" && s[key]) legacyCode[key] = manifest(s[key]);
+    delete result[key];
+  }
+  if (Object.keys(legacyCode).length) result.legacyCode = legacyCode;
+  return result;
 }
 export function pending(status: string) {
   return /^(waiting|pending|running|queued|queuing|compiling|judging)$/i.test(
@@ -54,7 +73,7 @@ export async function watch(
         return { submission: last, timedOut: true };
       throw e;
     }
-    const fingerprint = JSON.stringify([last.status, last.result]);
+    const fingerprint = JSON.stringify([last.status, last.valid, last.result]);
     if (fingerprint !== previous) {
       options.progress?.(last);
       previous = fingerprint;

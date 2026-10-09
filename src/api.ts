@@ -57,9 +57,11 @@ export interface CaseResult {
   msg?: string;
 }
 export interface Submission extends Entity {
+  [key: string]: unknown;
   user_id: string;
   problem_id: string;
   status: string;
+  valid?: boolean;
   result?: CaseResult[];
   files?: ProjectFile[];
   can_view_code?: boolean;
@@ -210,17 +212,12 @@ export class Client {
     return r.data.files;
   }
   async submission(id: string, timeoutMs?: number) {
+    const deadline = timeoutMs === undefined ? undefined : Date.now() + timeoutMs;
     if (/^\d+$/.test(id)) {
       if (!this.submissionIds.has(id)) {
-        this.requireUser();
-        const r = await this.request<{ list: Submission[] }>(
-          "/api/submissions/global/list",
-          { q: id, limit: 100, skip: 0, withCount: 1 },
-          undefined,
-          timeoutMs,
-        );
-        const row = r.list.find((s) => String(s.ID) === id);
-        if (!row) throw new Error("未找到该提交编号；请直接使用提交记录链接。");
+        const rows = await this.userSubmissions(timeoutMs);
+        const row = rows.find((s) => String(s.ID) === id);
+        if (!row) throw new Error("当前账号未找到该提交编号；请核对 --profile 或使用提交记录链接。");
         this.submissionIds.set(id, row._id);
       }
       id = this.submissionIds.get(id)!;
@@ -229,8 +226,34 @@ export class Client {
       `/api/submissions/${encodeURIComponent(id)}`,
       this.query(),
       undefined,
-      timeoutMs,
+      deadline === undefined ? undefined : Math.max(1, deadline - Date.now()),
     );
+  }
+  async userSubmissions(timeoutMs?: number): Promise<Submission[]> {
+    const user = this.requireUser();
+    const deadline = timeoutMs === undefined ? undefined : Date.now() + timeoutMs;
+    const rows: Submission[] = [], ids = new Set<string>();
+    for (let page = 0; page < 100; page++) {
+      if (deadline !== undefined && Date.now() >= deadline)
+        throw new Error("读取账号提交历史超时；请使用提交记录链接。");
+      const data = await this.request<{ list: Submission[]; total: number }>(
+        `/api/submissions/user/${user._id}`,
+        { withCount: 1, order: "desc", strict: 1, limit: 100, skip: rows.length },
+        undefined,
+        deadline === undefined ? undefined : Math.max(1, deadline - Date.now()),
+      );
+      if (!Array.isArray(data.list) || !Number.isSafeInteger(data.total) || data.total < 0)
+        throw new Error("账号提交历史格式变化，无法返回完整记录。");
+      for (const row of data.list) {
+        if (row.user_id !== user._id || !row._id || ids.has(row._id))
+          throw new Error("账号提交历史出现账号不匹配或重复记录，请重新查询。");
+        ids.add(row._id);
+        rows.push(row);
+      }
+      if (rows.length >= data.total) return rows;
+      if (!data.list.length) throw new Error("账号提交历史分页不完整。");
+    }
+    throw new Error("账号提交历史超过查询页数上限，未返回不完整记录。");
   }
 }
 

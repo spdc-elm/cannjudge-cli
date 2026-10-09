@@ -110,14 +110,20 @@ cannjudge submit "$P" --base https://cannjudge.cn/submission/SUBMISSION_OBJECT_I
 ```bash
 cannjudge status https://cannjudge.cn/submission/SUBMISSION_OBJECT_ID --watch
 cannjudge status SUBMISSION_OBJECT_ID --watch --interval 5 --timeout 600 --json
+cannjudge detail SUBMISSION_OBJECT_ID --profile personal --json
+cannjudge detail SUBMISSION_OBJECT_ID --include-code --json
 cannjudge submissions "$P" --mine --limit 5
 cannjudge ranking "$P" --limit 10
 cannjudge ranking https://cannjudge.cn/public/ct_starcup_aiop_g3 --limit 10
 ```
 
-`status` 输出各测试点的状态、用时、精度比例及错误信息。数字提交编号需登录后通过提交列表解析，推荐直接用提交链接或内部 ID。列表和排行榜支持 `--page` / `--limit`。
+`status` 输出各测试点的状态、用时、精度比例、错误信息，以及服务端的 `valid`。`status=Pass` 表示评测通过，`valid=false` 表示提交已无效；两者可以同时出现。字段缺失时输出 `valid=null`，不推断有效性。`valid=true` 也不证明经过人工合规审查；接口没有返回审查记录时，不能推断审查范围或原因。
 
-退出码：`0` 成功或未结束的单次查询，`1` 操作／网络错误，`2` 评测终态未通过，`3` 跟踪超时。超时保留提交链接，重新运行 `status --watch` 即可。提交 POST **不自动重试**；连接中断可能已经提交，先查 `submissions` 再决定是否重试。
+`detail` 使用现有提交详情接口 `/api/submissions/:id`，保留服务端返回的有效性、提交者、题目、比赛、原始结果、消息及其他元数据，不补造“违规原因”。默认将源码正文替换为文件清单、UTF-8 字节数和 SHA-256；`--include-code` 返回包含源码的原始详情，`download` 将工程导出到目录。只有服务端允许读取的详情才能查询，账号不匹配时使用正确的 `--profile`。
+
+`submissions --mine` 分页读取当前账号的提交历史再按题目筛选，保留 `valid`；题目级简表接口没有该字段。数字提交编号也从当前账号历史解析，不依赖普通账号可能无权使用的全局列表。推荐直接用提交链接或内部 ID 减少请求。列表和排行榜支持 `--page` / `--limit`。`ranking` 额外保留 `testcases[].tbest`、排名选取模式、提交者、提交编号和时间，便于将榜单行绑定到实际提交；当前 TBest 不是历史 TBest，也不是贡献者身份。
+
+退出码：`0` 查询成功或未结束的单次查询，`1` 操作／网络错误，`2` `status`（含提交后的跟踪）评测终态未通过或 `valid=false`，`3` 跟踪超时。`detail` 读取成功即返回 `0`，有效性由原始字段表达。超时保留提交链接，重新运行 `status --watch` 即可。提交 POST **不自动重试**；连接中断可能已经提交，先查 `submissions` 再决定是否重试。
 
 ## 验证与接口边界
 
