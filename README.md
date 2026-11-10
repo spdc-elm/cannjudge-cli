@@ -2,7 +2,7 @@
 
 独立工具仓库：[spdc-elm/cannjudge-cli](https://github.com/spdc-elm/cannjudge-cli)。可在任意工作目录调用，题目源码由命令参数指定。
 
-用题目／比赛链接读题、下载模板、提交本地源码、跟踪评测和查榜。TypeScript，Node.js ≥ 22.18，零运行时依赖。不依赖浏览器自动化；登录过期时需重新登录。
+用题目／比赛链接读题、下载模板、提交本地源码、跟踪评测和查榜。TypeScript，Node.js ≥ 22.18，零运行时依赖。不依赖浏览器自动化；关联 GitCode 凭据后可自动恢复过期的 Judge 会话。
 
 ```bash
 node src/cli.ts --help
@@ -24,6 +24,26 @@ cannjudge inspect https://cannjudge.cn/public/ct_starcup_aiop_g3 --problem mhche
 所有命令支持 `--json`；stdout 只有结果，进度和错误走 stderr。`status` 默认不输出工程源码，避免占上下文。
 
 ## 登录与凭据
+
+### 用已有 GitCode / CANNLab 凭据续登
+
+已有 Judge profile 和 CANNLab 网页凭据时，执行一次关联并验证登录：
+
+```bash
+cannjudge auth gitcode --profile work --cannlab-auth /private/cannlab/work/web-auth.json
+cannjudge auth status --profile work
+cannjudge usage --profile work --json
+```
+
+默认复用同级 `cannlab` 仓库的 `auth.mjs`；工具不在同级目录时，设置 `CANNLAB_ROOT=/path/to/cannlab`。CANNLab 负责自动刷新 GitCode 网页 token。Judge Cookie 则通过官方 OAuth 流程重新获取：Judge 发起带 state 的授权 → GitCode Bearer 授权 → Judge 回调 → 一次性 ticket 交换 → `/api/users/me/<ID>` 验证身份。GitCode token 不会作为 Judge Cookie 使用或发送给 Judge。
+
+该命令只续登已有 profile，不注册账号、不绑定网站身份、不切换默认账号。仅在交换返回的 Judge 内部 ID 和数字 ID 均匹配所选 profile 后，才更新 Cookie 并记录 GitCode 凭据文件路径；Judge 配置不会复制 GitCode token。`auth list` 可查看关联路径。
+
+关联后，CLI 的 `auth status/use`、查询和提交遇到明确 HTTP 401 时，会自动重新登录并重试一次。刷新成功只返回正常业务结果；GitCode 凭据失效、OAuth 参数变化或身份不匹配会停止并报告原因，不自动换号。普通 API 客户端 `new Client(...)` 不会自行猜测凭据来源；上层脚本可使用 `sessionClient(await loadSession(undefined, profile))`（`src/gitcode.ts`）获得同样的自动恢复行为。
+
+只有服务端明确拒绝认证的401会重试。网络中断、超时、5xx、429以及其他业务失败不触发提交重放；提交结果不确定时仍须先查历史。邮箱密码登录和浏览器会话导入仍按显式输入执行，不调用已关联的 GitCode 续登。
+
+### 密码登录和浏览器会话导入
 
 普通邮箱／手机号密码登录：
 
@@ -63,7 +83,7 @@ cannjudge auth status --profile work
 cannjudge auth logout --profile work  # 仅移除 work 的本地会话
 ```
 
-`--profile` 支持别名、账号数字 ID 或内部 ID。`auth list` 不显示 Cookie，也不宣称缓存会话仍有效；`auth status`、`auth use`、次数查询和提交会验证 Cookie 对应的真实身份。未找到账号或会话过期时直接报错，不自动换号。退出当前账号后也不会自动选中另一个账号。同一账号重新命名后，计数仍按账号 ID 保留。
+`--profile` 支持别名、账号数字 ID 或内部 ID。`auth list` 不显示 Cookie，也不宣称缓存会话仍有效；`auth status`、`auth use`、次数查询和提交会验证 Cookie 对应的真实身份。未找到账号会报错；过期会话有 GitCode 关联时先自动续登，未关联时需重新登录或导入，不自动换号。退出当前账号后也不会自动选中另一个账号。同一账号重新命名后，计数仍按账号 ID 保留。
 
 ## 当天提交次数
 

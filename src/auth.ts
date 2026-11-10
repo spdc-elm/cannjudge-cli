@@ -2,7 +2,8 @@ import { importSession, listenImport } from "./import-session.ts";
 import { readFile, writeFile, mkdir } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { Client, configDir, minimalUser } from "./api.ts";
-import { saveSession, logout, listAccounts } from "./accounts.ts";
+import { saveSession, logout, listAccounts, loadSession } from "./accounts.ts";
+import { renewGitCodeSession } from "./gitcode.ts";
 export async function readStdin() {
   let text = "";
   for await (const chunk of process.stdin) text += chunk;
@@ -55,8 +56,18 @@ export async function auth(
     listen?: boolean;
     name?: string;
     profile?: string;
+    cannlabAuth?: string;
   },
 ) {
+  if (["login", "import", "captcha"].includes(action)) client.reauthenticate = undefined;
+  if (action === "gitcode") {
+    const saved = await loadSession(undefined, opts.profile);
+    if (!saved) throw new Error("请先导入已有 Judge profile，避免 GitCode 续登时登录其他账号。");
+    const fresh = await renewGitCodeSession(saved, opts.cannlabAuth);
+    client.user = fresh.user;
+    client.cookie = fresh.cookie;
+    return { loggedIn: true, user: fresh.user, gitcodeLinked: true };
+  }
   if (action === "logout") {
     await logout(undefined, opts.profile);
     return { loggedIn: false };
@@ -138,6 +149,6 @@ export async function auth(
     return { loggedIn: true, user };
   }
   throw new Error(
-    "auth 子命令：captcha / login / import / status / list / use / logout",
+    "auth 子命令：gitcode / captcha / login / import / status / list / use / logout",
   );
 }

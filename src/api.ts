@@ -96,6 +96,9 @@ export class Client {
   origin: string;
   cookie: string;
   private submissionIds = new Map<string, string>();
+  reauthenticate?: () => Promise<void>;
+  private reauthenticating?: Promise<void>;
+  private authGeneration = 0;
   constructor(user?: User, cookie = "", origin = ORIGIN) {
     this.user = user;
     this.cookie = cookie;
@@ -117,6 +120,30 @@ export class Client {
     query: Record<string, string | number | undefined> = {},
     data?: unknown,
     timeoutMs = 30_000,
+  ): Promise<T> {
+    const generation = this.authGeneration;
+    try { return await this.requestOnce<T>(path, query, data, timeoutMs); }
+    catch (error) {
+      if (!(error instanceof ApiError) || error.status !== 401 || !this.reauthenticate)
+        throw error;
+      if (generation === this.authGeneration) {
+        if (!this.reauthenticating) {
+          this.reauthenticating = this.reauthenticate().then(() => { this.authGeneration++; });
+        }
+        const pending = this.reauthenticating;
+        try { await pending; }
+        finally { if (this.reauthenticating === pending) this.reauthenticating = undefined; }
+      }
+      // Only an explicit 401 is replayed, once. Network failures and 5xx may
+      // already have accepted a submission and must never trigger replay.
+      return this.requestOnce<T>(path, query, data, timeoutMs);
+    }
+  }
+  private async requestOnce<T>(
+    path: string,
+    query: Record<string, string | number | undefined>,
+    data: unknown,
+    timeoutMs: number,
   ): Promise<T> {
     if (!path.startsWith("/api/")) throw new Error("无效 API 路径。");
     const url = new URL(path, this.origin);
@@ -145,21 +172,7 @@ export class Client {
           : "POST 请求中断，服务端可能已接收；请先查询 submissions，勿盲目重试。",
       );
     }
-    const jar = new Map(
-      this.cookie
-        .split(/; */)
-        .filter(Boolean)
-        .map((c) => [c.slice(0, c.indexOf("=")), c.slice(c.indexOf("=") + 1)]),
-    );
-    for (const item of response.headers.getSetCookie()) {
-      const pair = item.split(";")[0],
-        i = pair.indexOf("=");
-      if (i > 0) {
-        if (/max-age=0(?:;|$)/i.test(item)) jar.delete(pair.slice(0, i));
-        else jar.set(pair.slice(0, i), pair.slice(i + 1));
-      }
-    }
-    this.cookie = [...jar].map(([k, v]) => `${k}=${v}`).join("; ");
+    this.cookie = mergeCookies(this.cookie, response.headers);
     let text: string;
     try {
       text = await response.text();
@@ -255,6 +268,19 @@ export class Client {
     }
     throw new Error("账号提交历史超过查询页数上限，未返回不完整记录。");
   }
+}
+
+export function mergeCookies(cookie: string, headers: Headers): string {
+  const jar = new Map(cookie.split(/; */).filter(Boolean)
+    .map(c => [c.slice(0, c.indexOf("=")), c.slice(c.indexOf("=") + 1)]));
+  for (const item of headers.getSetCookie()) {
+    const pair = item.split(";")[0], i = pair.indexOf("=");
+    if (i > 0) {
+      if (/max-age=0(?:;|$)/i.test(item)) jar.delete(pair.slice(0, i));
+      else jar.set(pair.slice(0, i), pair.slice(i + 1));
+    }
+  }
+  return [...jar].map(([k, v]) => `${k}=${v}`).join("; ");
 }
 
 export function validateCookie(cookie: unknown): string {

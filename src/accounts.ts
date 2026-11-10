@@ -7,13 +7,14 @@ import {
   rm,
   readdir,
 } from "node:fs/promises";
-import { join } from "node:path";
+import { isAbsolute, join, resolve } from "node:path";
 import { randomUUID } from "node:crypto";
 import { configDir, minimalUser, validateCookie, ORIGIN } from "./api.ts";
 import type { Session, User } from "./api.ts";
 
 export interface AccountSession extends Session {
   name: string;
+  gitcodeAuthFile?: string;
 }
 
 export async function privateDirectory(dir: string) {
@@ -40,12 +41,16 @@ function validateSession(value: unknown): AccountSession {
   const s = value as AccountSession;
   if (s?.origin !== ORIGIN) throw new Error("会话站点不匹配。");
   const user = minimalUser(s.user);
+  if (s.gitcodeAuthFile !== undefined &&
+      (typeof s.gitcodeAuthFile !== "string" || !isAbsolute(s.gitcodeAuthFile) || /[\r\n]/.test(s.gitcodeAuthFile)))
+    throw new Error("GitCode 凭据关联路径无效。");
   return {
     origin: ORIGIN,
     user,
     cookie: validateCookie(s.cookie),
     savedAt: s.savedAt,
     name: validateName(s.name || String(user.ID)),
+    ...(s.gitcodeAuthFile ? { gitcodeAuthFile: s.gitcodeAuthFile } : {}),
   };
 }
 function validateName(name: string) {
@@ -106,13 +111,15 @@ export async function saveSession(
   cookie: string,
   dir = configDir(),
   name?: string,
+  options: { activate?: boolean; gitcodeAuthFile?: string } = {},
 ) {
   const cleanUser = minimalUser(user),
     cleanCookie = validateCookie(cookie);
   const all = await sessions(dir);
+  const existing = all.find(s => s.user._id === cleanUser._id);
   const alias = validateName(
     name ||
-      all.find((s) => s.user._id === cleanUser._id)?.name ||
+      existing?.name ||
       String(cleanUser.ID),
   );
   if (
@@ -125,15 +132,17 @@ export async function saveSession(
     )
   )
     throw new Error(`别名或编号已被其他账号使用：${alias}`);
+  const gitcodeAuthFile = options.gitcodeAuthFile || existing?.gitcodeAuthFile;
   const session: AccountSession = {
     origin: ORIGIN,
     user: cleanUser,
     cookie: cleanCookie,
     savedAt: new Date().toISOString(),
     name: alias,
+    ...(gitcodeAuthFile ? { gitcodeAuthFile: resolve(gitcodeAuthFile) } : {}),
   };
   await atomicJson(join(dir, "accounts", `${user._id}.json`), session);
-  await atomicJson(join(dir, "active.json"), user._id);
+  if (options.activate !== false) await atomicJson(join(dir, "active.json"), user._id);
   return session;
 }
 export async function listAccounts(dir = configDir()) {
@@ -144,6 +153,7 @@ export async function listAccounts(dir = configDir()) {
     user: s.user,
     active: active === s.user._id,
     savedAt: s.savedAt,
+    ...(s.gitcodeAuthFile ? { gitcodeAuthFile: s.gitcodeAuthFile } : {}),
   }));
 }
 export async function useAccount(profile: string, dir = configDir()) {

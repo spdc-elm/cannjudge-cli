@@ -5,6 +5,7 @@ import { loadSession, useAccount } from "./accounts.ts";
 import { getUsage, submitProject } from "./usage.ts";
 import type { Submission, User } from "./api.ts";
 import { auth } from "./auth.ts";
+import { sessionClient } from "./gitcode.ts";
 import { resolve, problemUrl, submissionId } from "./resolve.ts";
 import { buildProject, writeProject } from "./project.ts";
 import { summarize, detail, watch, pending } from "./results.ts";
@@ -32,6 +33,8 @@ const HELP = `cannjudge — Node.js/TypeScript CLI (Node >=22.18)
   auth login --account EMAIL --challenge FILE --code CODE [--password-stdin]
   auth import --file FILE|-    导入自己的浏览器会话 {user, cookie} JSON
   auth import --listen [--name NAME]  保存独立账号（登录也支持 --name）
+  auth gitcode --profile NAME --cannlab-auth FILE
+    用已有 CANNLab/GitCode 网页凭据续登；关联后 Judge 401 自动重新登录。
   auth list | auth use NAME | auth status | auth logout
 
 所有命令支持 --json、--profile NAME（仅本次选择账号）。进度写 stderr，结果写 stdout。
@@ -80,6 +83,7 @@ async function main() {
       "password-stdin": { type: "boolean" },
       profile: { type: "string" },
       name: { type: "string" },
+      "cannlab-auth": { type: "string" },
     },
   });
   const [command, input] = p;
@@ -95,15 +99,17 @@ async function main() {
     if (p.length !== 3 || o.profile)
       throw new Error("用法：auth use NAME（与 --profile 分开使用）。");
     const selected = await loadSession(undefined, p[2]);
-    await new Client(selected?.user, selected?.cookie).currentUser();
+    await sessionClient(selected).currentUser();
     print(await useAccount(p[2]), !!o.json);
     return;
   }
   if (p.length > 2) throw new Error("多余位置参数；路径含空格时请加引号。");
   if (o.name && !(command === "auth" && ["login", "import"].includes(input)))
     throw new Error("--name 仅用于 auth login/import 保存账号别名。");
+  if (o["cannlab-auth"] && !(command === "auth" && input === "gitcode"))
+    throw new Error("--cannlab-auth 仅用于 auth gitcode 关联凭据。");
   const session = await loadSession(undefined, o.profile);
-  const client = new Client(session?.user, session?.cookie),
+  const client = sessionClient(session),
     json = !!o.json;
   if (command === "auth") {
     print(
@@ -117,6 +123,7 @@ async function main() {
         listen: o.listen,
         name: o.name,
         profile: o.profile,
+        cannlabAuth: o["cannlab-auth"],
       }),
       json,
     );
